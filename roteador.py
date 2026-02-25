@@ -11,6 +11,7 @@ from flask import Flask, jsonify, request
 
 INFINITY = 16  # Padrão RIP
 
+
 class Router:
     """
     Representa um roteador que executa o algoritmo de Vetor de Distância.
@@ -21,6 +22,10 @@ class Router:
         self.neighbors = neighbors
         self.my_network = my_network
         self.update_interval = update_interval
+
+        # se passar mais desse tempo sem mandar atualização o processo eh morto pra n quebrar a aplicação
+        self.route_timeout = 90  
+
         print("DEBUG: inicializando roteador...")
         print("DEBUG network:", self.my_network)
         print("DEBUG neighbors:", self.neighbors)
@@ -30,23 +35,49 @@ class Router:
         # ===============================
         self.routing_table = {}
 
-        # 1. Rota para própria rede (custo 0)
         self.routing_table[self.my_network] = {
             'cost': 0,
-            'next_hop': self.my_address
+            'next_hop': self.my_address,
+            'last_update': time.time()
         }
 
-        # 2. Rotas para vizinhos diretos
         for neighbor, cost in self.neighbors.items():
             self.routing_table[neighbor] = {
                 'cost': cost,
-                'next_hop': neighbor
+                'next_hop': neighbor,
+                'last_update': time.time()
             }
 
         print("Tabela de roteamento inicial:")
         print(json.dumps(self.routing_table, indent=4))
 
         self._start_periodic_updates()
+
+        # a checagem de tempo sem enviar nada
+        self._start_timeout_checker()
+
+    # isso aq eh pra matar o processo quando ficar muito tempo ser dar retorno e n quebrar a aplicação
+
+    def _start_timeout_checker(self):
+        thread = threading.Thread(target=self._timeout_loop)
+        thread.daemon = True
+        thread.start()
+
+    def _timeout_loop(self):
+        while True:
+            time.sleep(5)
+            now = time.time()
+
+            for network, route in list(self.routing_table.items()):
+
+                if network == self.my_network:
+                    continue
+
+                if now - route.get('last_update', now) > self.route_timeout:
+                    if route['cost'] != INFINITY:
+                        print(f"Rota para {network} expirou. Marcando como INFINITY.")
+                        self.routing_table[network]['cost'] = INFINITY
+
 
     def _start_periodic_updates(self):
         thread = threading.Thread(target=self._periodic_update_loop)
@@ -63,18 +94,28 @@ class Router:
                 print(f"Erro durante atualização periódica: {e}")
 
     def send_updates_to_neighbors(self):
-        # Envia tabela diretamente (sem sumarização por enquanto)
-        tabela_para_enviar = self.routing_table.copy()
-
-        payload = {
-            "sender_address": self.my_address,
-            "routing_table": tabela_para_enviar
-        }
 
         for neighbor_address in self.neighbors:
+
+            tabela_para_enviar = {}
+
+            for network, info in self.routing_table.items():
+
+                # SPLIT HORIZON
+                if info['next_hop'] == neighbor_address:
+                    continue
+
+                tabela_para_enviar[network] = info
+
+            payload = {
+                "sender_address": self.my_address,
+                "routing_table": tabela_para_enviar
+            }
+
             url = f'http://{neighbor_address}/receive_update'
+
             try:
-                print(f"Enviando tabela para {neighbor_address}")
+                print(f"Enviando tabela (Split Horizon) para {neighbor_address}")
                 requests.post(url, json=payload, timeout=5)
             except requests.exceptions.RequestException as e:
                 print(f"Erro ao conectar com {neighbor_address}: {e}")
@@ -86,6 +127,7 @@ class Router:
 
 app = Flask(__name__)
 router_instance = None
+
 
 @app.route('/routes', methods=['GET'])
 def get_routes():
@@ -116,24 +158,17 @@ def receive_update():
     print(f"Atualização recebida de {sender_address}")
     print(json.dumps(sender_table, indent=4))
 
-    # ===============================
-    # BELLMAN-FORD
-    # ===============================
-
-    # 1. Verifica se é vizinho direto
     if sender_address not in router_instance.neighbors:
         return jsonify({"status": "ignored"}), 200
 
     cost_to_neighbor = router_instance.neighbors[sender_address]
     table_changed = False
 
-    # 2. Itera sobre rotas recebidas
     for network, info in sender_table.items():
 
         advertised_cost = info['cost']
         new_cost = cost_to_neighbor + advertised_cost
 
-        # Limite RIP
         if new_cost > INFINITY:
             new_cost = INFINITY
 
@@ -144,22 +179,25 @@ def receive_update():
             if new_cost < INFINITY:
                 router_instance.routing_table[network] = {
                     'cost': new_cost,
-                    'next_hop': sender_address
+                    'next_hop': sender_address,
+                    'last_update': time.time()  
                 }
                 table_changed = True
 
-        # Caso B: rota melhor encontrada
+        # Caso B: rota melhor
         elif new_cost < current_route['cost']:
             router_instance.routing_table[network] = {
                 'cost': new_cost,
-                'next_hop': sender_address
+                'next_hop': sender_address,
+                'last_update': time.time()  
             }
             table_changed = True
 
-        # Caso C: atualização do mesmo next_hop (propagação de falha)
+        # Caso C: mesmo next_hop (propagação de falha)
         elif current_route['next_hop'] == sender_address:
             if current_route['cost'] != new_cost:
                 router_instance.routing_table[network]['cost'] = new_cost
+                router_instance.routing_table[network]['last_update'] = time.time()  
                 table_changed = True
 
     if table_changed:
