@@ -41,22 +41,13 @@ class Router:
             'last_update': time.time()
         }
 
-        for neighbor, cost in self.neighbors.items():
-            self.routing_table[neighbor] = {
-                'cost': cost,
-                'next_hop': neighbor,
-                'last_update': time.time()
-            }
-
         print("Tabela de roteamento inicial:")
         print(json.dumps(self.routing_table, indent=4))
 
         self._start_periodic_updates()
-
         # a checagem de tempo sem enviar nada
         self._start_timeout_checker()
 
-    # isso aq eh pra matar o processo quando ficar muito tempo ser dar retorno e n quebrar a aplicação
 
     def _start_timeout_checker(self):
         thread = threading.Thread(target=self._timeout_loop)
@@ -95,17 +86,22 @@ class Router:
 
     def send_updates_to_neighbors(self):
 
+        tabela_sumarizada = self.summarize_routes()
+
         for neighbor_address in self.neighbors:
 
             tabela_para_enviar = {}
 
-            for network, info in self.routing_table.items():
+            for network, info in tabela_sumarizada.items():
 
-                # SPLIT HORIZON
+                # 3️⃣ SPLIT HORIZON
                 if info['next_hop'] == neighbor_address:
                     continue
 
-                tabela_para_enviar[network] = info
+                tabela_para_enviar[network] = {
+                    'cost': info['cost'],
+                    'next_hop': info['next_hop']
+                }
 
             payload = {
                 "sender_address": self.my_address,
@@ -115,12 +111,166 @@ class Router:
             url = f'http://{neighbor_address}/receive_update'
 
             try:
-                print(f"Enviando tabela (Split Horizon) para {neighbor_address}")
+                print(f"Enviando tabela sumarizada para {neighbor_address}")
                 requests.post(url, json=payload, timeout=5)
             except requests.exceptions.RequestException as e:
                 print(f"Erro ao conectar com {neighbor_address}: {e}")
 
 
+    def ip_to_int(self, ip):
+        parts = ip.split('.')
+        return (int(parts[0]) << 24) | \
+            (int(parts[1]) << 16) | \
+            (int(parts[2]) << 8)  | \
+                int(parts[3])
+    
+    def int_to_ip(self, value):
+        return ".".join([
+            str((value >> 24) & 0xFF),
+            str((value >> 16) & 0xFF),
+            str((value >> 8) & 0xFF),
+            str(value & 0xFF)
+        ])
+    
+    def prefix_to_mask(self, prefix):
+        return (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+    
+
+    def split_network(self, network):
+        ip, prefix = network.split('/')
+        return ip, int(prefix)
+    
+
+    def extract_network_data(self, routes):
+        """
+        Recebe lista de rotas [(network, cost), ...]
+        Retorna:
+            - lista de IPs em inteiro
+            - lista de custos
+        """
+        network_ints = []
+        costs = []
+
+        for net, cost in routes:
+            ip, _ = self.split_network(net)
+            network_ints.append(self.ip_to_int(ip))
+            costs.append(cost)
+
+        return network_ints, costs
+
+    def can_merge(self, net1, net2):
+        ip1, p1 = self.split_network(net1)
+        ip2, p2 = self.split_network(net2)
+
+        if p1 != p2:
+            return False
+
+        size = 2 ** (32 - p1)
+
+        int1 = self.ip_to_int(ip1)
+        int2 = self.ip_to_int(ip2)
+
+        return abs(int1 - int2) == size
+
+    def merge_networks(self, net1, net2):
+        ip1, p1 = self.split_network(net1)
+        ip2, p2 = self.split_network(net2)
+
+        new_prefix = p1 - 1
+        mask = self.prefix_to_mask(new_prefix)
+
+        int1 = self.ip_to_int(ip1)
+        new_network_int = int1 & mask
+
+        return f"{self.int_to_ip(new_network_int)}/{new_prefix}"
+    
+    def common_prefix(self, net1, net2):
+        ip1, _ = self.split_network(net1)
+        ip2, _ = self.split_network(net2)
+
+        int1 = self.ip_to_int(ip1)
+        int2 = self.ip_to_int(ip2)
+
+        xor = int1 ^ int2
+
+        prefix = 0
+        for i in range(31, -1, -1):
+            if (xor >> i) & 1:
+                break
+            prefix += 1
+
+        return prefix
+    
+    def summarize_routes(self):
+
+        grouped = {}
+        for network, info in self.routing_table.items():
+            if network == self.my_network:
+                continue
+
+            next_hop = info['next_hop']
+            grouped.setdefault(next_hop, []).append((network, info['cost']))
+
+        summarized = {}
+        for next_hop, routes in grouped.items():
+
+            if len(routes) == 1:
+                net, cost = routes[0]
+                summarized[net] = {
+                    'cost': cost,
+                    'next_hop': next_hop,
+                    'last_update': time.time()
+                }
+                continue
+            network_ints, costs = self.extract_network_data(routes)
+            min_ip = min(network_ints)
+            max_ip = max(network_ints)
+            xor = min_ip ^ max_ip
+
+            prefix = 0
+            for i in range(31, -1, -1):
+                if (xor >> i) & 1:
+                    break
+                prefix += 1
+
+            if prefix < 16:
+                # mantém rotas originais
+                for net, cost in routes:
+                    summarized[net] = {
+                        'cost': cost,
+                        'next_hop': next_hop,
+                        'last_update': time.time()
+                    }
+                continue
+
+            mask = self.prefix_to_mask(prefix)
+            supernet_int = min_ip & mask
+            supernet = f"{self.int_to_ip(supernet_int)}/{prefix}"
+            valid = True
+
+            for ip_int in network_ints:
+                if (ip_int & mask) != supernet_int:
+                    valid = False
+                    break
+
+            if not valid:
+                for net, cost in routes:
+                    summarized[net] = {
+                        'cost': cost,
+                        'next_hop': next_hop,
+                        'last_update': time.time()
+                    }
+                continue
+
+            summarized[supernet] = {
+                'cost': max(costs),  # regra obrigatória
+                'next_hop': next_hop,
+                'last_update': time.time()
+            }
+
+        summarized[self.my_network] = self.routing_table[self.my_network]
+
+        return summarized
 # ===============================
 # FLASK SETUP
 # ===============================
@@ -184,7 +334,6 @@ def receive_update():
                 }
                 table_changed = True
 
-        # Caso B: rota melhor
         elif new_cost < current_route['cost']:
             router_instance.routing_table[network] = {
                 'cost': new_cost,
