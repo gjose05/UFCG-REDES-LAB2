@@ -1,0 +1,74 @@
+[
+  {
+    "name": "R1",
+    "network": "10.0.0.0/24",
+    "address": "127.0.0.1:5000",
+    "config_file": "R1.csv"
+  },
+  {
+    "name": "R2",
+    "network": "10.0.1.0/24",
+    "address": "127.0.0.1:5001",
+    "config_file": "R2.csv"
+  },
+  {
+    "name": "R3",
+    "network": "10.0.2.0/24",
+    "address": "127.0.0.1:5002",
+    "config_file": "R3.csv"
+  },
+  {
+    "name": "R4",
+    "network": "10.0.3.0/24",
+    "address": "127.0.0.1:5003",
+    "config_file": "R4.csv"
+  },
+  {
+    "name": "R5",
+    "network": "10.0.4.0/23",
+    "address": "127.0.0.1:5004",
+    "config_file": "R5.csv"
+  },
+  {
+    "name": "R6",
+    "network": "10.0.6.0/23",
+    "address": "127.0.0.1:5005",
+    "config_file": "R6.csv"
+  },
+  {
+    "name": "R7",
+    "network": "10.0.8.0/23",
+    "address": "127.0.0.1:5006",
+    "config_file": "R7.csv"
+  },
+  {
+    "name": "R8",
+    "network": "10.0.10.0/23",
+    "address": "127.0.0.1:5007",
+    "config_file": "R8.csv"
+  },
+  {
+    "name": "R9",
+    "network": "10.0.12.0/22",
+    "address": "127.0.0.1:5008",
+    "config_file": "R9.csv"
+  },
+  {
+    "name": "R10",
+    "network": "10.0.16.0/22",
+    "address": "127.0.0.1:5009",
+    "config_file": "R10.csv"
+  },
+  {
+    "name": "R11",
+    "network": "10.0.20.0/22",
+    "address": "127.0.0.1:5010",
+    "config_file": "R11.csv"
+  },
+  {
+    "name": "R12",
+    "network": "10.0.24.0/22",
+    "address": "127.0.0.1:5011",
+    "config_file": "R12.csv"
+  }
+]
